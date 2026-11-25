@@ -1,0 +1,23 @@
+{
+  "version": "0.4.0",
+  "payloadSha256": "328f1032eb550062cedbbb977968bd7711dd43bcda45fd01f158ea99264ba7f2",
+  "payloadBytes": 18173324,
+  "apkSha256": "d6ad63ae986a6fa74ca27d3799e1b154bc9c099e41d638a7286c0a37eb279b92",
+  "apkBytes": 15091299,
+  "electronSha256": "20155c8b8aa5b1f575f3757bdf21490e0bac2f19a65a26ce9ba99bcf9f2c69bd",
+  "apkParts": [
+    "apk-000",
+    "apk-001",
+    "apk-002",
+    "apk-003",
+    "apk-004"
+  ],
+  "payloadParts": [
+    "payload-000",
+    "payload-001",
+    "payload-002",
+    "payload-003",
+    "payload-004",
+    "payload-005"
+  ]
+}
