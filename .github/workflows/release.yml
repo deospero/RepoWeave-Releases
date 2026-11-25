@@ -59,30 +59,41 @@ jobs:
           checksum.write_text(meta['sha256'] + '  ' + name + '\n')
           notesfile = work / 'NOTES.md'
           notesfile.write_text(notes)
-          def gh(*args, check=True):
-              return subprocess.run(['gh', *args], text=True, capture_output=True, check=check)
-          existing = gh('api', 'repos/' + repo + '/releases/tags/' + tag, check=False)
-          if existing.returncode:
-              assert '404' in existing.stderr, existing.stderr
-              result = gh('release', 'create', tag, '--draft', '--target', commit,
-                          '--title', 'RepoWeave ' + version, '--notes-file', str(notesfile))
-              print(result.stdout.strip())
-              release = json.loads(gh('api', 'repos/' + repo + '/releases/tags/' + tag).stdout)
+          # The tag endpoint returns published releases only. Drafts are addressed by ID.
+          import urllib.error
+          class NoRedirect(urllib.request.HTTPRedirectHandler):
+              def redirect_request(self, *args, **kwargs):
+                  return None
+          opener = urllib.request.build_opener(NoRedirect)
+          def request(method, url, body=None, kind='application/json'):
+              assert url.startswith('https://api.github.com/repos/' + repo + '/') or url.startswith('https://uploads.github.com/repos/' + repo + '/')
+              headers = {'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json', 'User-Agent': 'RepoWeave-release', 'Content-Type': kind, 'X-GitHub-Api-Version': '2022-11-28'}
+              req = urllib.request.Request(url, data=body, headers=headers, method=method)
+              with opener.open(req, timeout=120) as response:
+                  return json.loads(response.read())
+          api = 'https://api.github.com/repos/' + repo + '/'
+          releases = request('GET', api + 'releases?per_page=100')
+          matches = [r for r in releases if r['tag_name'] == tag]
+          assert len(matches) <= 1, 'Duplicate release tags; inspect before retrying'
+          if matches:
+              release = matches[0]
           else:
-              release = json.loads(existing.stdout)
-          assets = {asset['name'] for asset in release.get('assets', [])}
-          if name in assets:
-              verify = work / 'existing'
-              verify.mkdir()
-              gh('release', 'download', tag, '--pattern', name, '--dir', str(verify))
-              assert hashlib.sha256((verify / name).read_bytes()).hexdigest() == meta['sha256'], 'Existing APK differs; refusing overwrite'
-          else:
-              gh('release', 'upload', tag, str(apk))
-          if checksum.name not in assets:
-              gh('release', 'upload', tag, str(checksum))
+              payload = {'tag_name': tag, 'target_commitish': commit, 'name': 'RepoWeave ' + version, 'body': notes, 'draft': True, 'prerelease': False}
+              release = request('POST', api + 'releases', json.dumps(payload).encode())
+          release_id = str(release['id'])
+          assert release_id.isdigit()
+          assets = {asset['name']: asset for asset in release.get('assets', [])}
+          for file in [apk, checksum]:
+              if file.name in assets:
+                  assert assets[file.name]['size'] == file.stat().st_size, 'Existing asset size differs; refusing overwrite'
+                  assert assets[file.name].get('digest') == 'sha256:' + hashlib.sha256(file.read_bytes()).hexdigest(), 'Existing asset checksum missing or differs; refusing overwrite'
+                  continue
+              upload = 'https://uploads.github.com/repos/' + repo + '/releases/' + release_id + '/assets?name=' + file.name
+              asset = request('POST', upload, file.read_bytes(), 'application/octet-stream')
+              assert asset['size'] == file.stat().st_size
           if release.get('draft'):
-              gh('release', 'edit', tag, '--draft=false', '--latest')
-          final = json.loads(gh('api', 'repos/' + repo + '/releases/tags/' + tag).stdout)
+              request('PATCH', api + 'releases/' + release_id, json.dumps({'draft':False, 'make_latest':'true'}).encode())
+          final = request('GET', api + 'releases/' + release_id)
           assert not final['draft'] and not final['prerelease']
           assert name in {asset['name'] for asset in final['assets']}
           print('Published:', final['html_url'])
