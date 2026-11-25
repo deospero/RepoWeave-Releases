@@ -41,7 +41,13 @@ jobs:
           assert re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version)
           name = 'RepoWeave-' + version + '.apk'
           root = 'release-inputs/' + version + '/'
-          package = fetch(root + name)
+          parts = meta.get('parts')
+          if parts:
+              assert isinstance(parts, list) and len(parts) <= 32
+              assert parts == [f'part-{i:03d}' for i in range(len(parts))]
+              package = b''.join(fetch(root + part) for part in parts)
+          else:
+              package = fetch(root + name)
           assert hashlib.sha256(package).hexdigest() == meta['sha256'], 'APK checksum mismatch'
           assert len(package) == meta['sizeBytes'], 'APK size mismatch'
           notes = fetch(root + 'NOTES.md').decode('utf-8')
