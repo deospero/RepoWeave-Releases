@@ -1,0 +1,84 @@
+name: Publish verified RepoWeave APK
+on:
+  push:
+    branches: [main]
+    paths: [release-inputs/latest.json]
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: repoweave-release
+  cancel-in-progress: false
+jobs:
+  publish:
+    if: github.repository == 'deospero/RepoWeave-Releases'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Verify package bytes and publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_COMMIT: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, re, subprocess, tempfile, urllib.request
+          repo = os.environ['GH_REPO']
+          assert repo == 'deospero/RepoWeave-Releases'
+          commit = os.environ['RELEASE_COMMIT']
+          assert re.fullmatch(r'[0-9a-f]{40}', commit)
+          base = 'https://raw.githubusercontent.com/' + repo + '/' + commit + '/'
+          def fetch(path):
+              request = urllib.request.Request(base + path, headers={'User-Agent':'RepoWeave-release'})
+              with urllib.request.urlopen(request, timeout=60) as response:
+                  data = response.read(32 * 1024 * 1024)
+                  assert not response.read(1), 'Release input too large'
+                  return data
+          meta = json.loads(fetch('release-inputs/latest.json'))
+          version = meta['version']
+          assert re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', version)
+          name = 'RepoWeave-' + version + '.apk'
+          root = 'release-inputs/' + version + '/'
+          package = fetch(root + name)
+          assert hashlib.sha256(package).hexdigest() == meta['sha256'], 'APK checksum mismatch'
+          assert len(package) == meta['sizeBytes'], 'APK size mismatch'
+          notes = fetch(root + 'NOTES.md').decode('utf-8')
+          tag = 'v' + version
+          work = pathlib.Path(tempfile.mkdtemp(prefix='repoweave-release-'))
+          apk = work / name
+          apk.write_bytes(package)
+          checksum = work / 'SHA256SUMS.txt'
+          checksum.write_text(meta['sha256'] + '  ' + name + '\n')
+          notesfile = work / 'NOTES.md'
+          notesfile.write_text(notes)
+          def gh(*args, check=True):
+              return subprocess.run(['gh', *args], text=True, capture_output=True, check=check)
+          existing = gh('api', 'repos/' + repo + '/releases/tags/' + tag, check=False)
+          if existing.returncode:
+              assert '404' in existing.stderr, existing.stderr
+              result = gh('release', 'create', tag, '--draft', '--target', commit,
+                          '--title', 'RepoWeave ' + version, '--notes-file', str(notesfile))
+              print(result.stdout.strip())
+              release = json.loads(gh('api', 'repos/' + repo + '/releases/tags/' + tag).stdout)
+          else:
+              release = json.loads(existing.stdout)
+          assets = {asset['name'] for asset in release.get('assets', [])}
+          if name in assets:
+              verify = work / 'existing'
+              verify.mkdir()
+              gh('release', 'download', tag, '--pattern', name, '--dir', str(verify))
+              assert hashlib.sha256((verify / name).read_bytes()).hexdigest() == meta['sha256'], 'Existing APK differs; refusing overwrite'
+          else:
+              gh('release', 'upload', tag, str(apk))
+          if checksum.name not in assets:
+              gh('release', 'upload', tag, str(checksum))
+          if release.get('draft'):
+              gh('release', 'edit', tag, '--draft=false', '--latest')
+          final = json.loads(gh('api', 'repos/' + repo + '/releases/tags/' + tag).stdout)
+          assert not final['draft'] and not final['prerelease']
+          assert name in {asset['name'] for asset in final['assets']}
+          print('Published:', final['html_url'])
+          print('SHA256:', meta['sha256'])
+          PY
